@@ -7,13 +7,18 @@
 > 替换 `YOUR_BARK_KEY` 为你自己的 Bark 密钥后执行：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/ctsunny/stock-monitor/main/fachost_tw_nat_monitor.py -o fachost_tw_nat_monitor.py && pip3 install -U requests && python3 fachost_tw_nat_monitor.py --bark-key 'YOUR_BARK_KEY' --interval 15
+curl -fsSL https://raw.githubusercontent.com/ctsunny/stock-monitor/main/fachost_tw_nat_monitor.py -o fachost_tw_nat_monitor.py && python3 -m pip install -U requests && python3 fachost_tw_nat_monitor.py --bark-key 'YOUR_BARK_KEY' --interval 15
 ```
+
+> 如提示 `No module named pip`，先执行：
+> ```bash
+> apt-get install -y python3-pip
+> ```
 
 只监控指定套餐（如只盯 Hinet-Nat-1 和 Seednet-Nat-1）：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/ctsunny/stock-monitor/main/fachost_tw_nat_monitor.py -o fachost_tw_nat_monitor.py && pip3 install -U requests && python3 fachost_tw_nat_monitor.py --bark-key 'YOUR_BARK_KEY' --watch 'Hinet-Nat-1,Seednet-Nat-1' --interval 15 --notify-mode bark+critical
+curl -fsSL https://raw.githubusercontent.com/ctsunny/stock-monitor/main/fachost_tw_nat_monitor.py -o fachost_tw_nat_monitor.py && python3 -m pip install -U requests && python3 fachost_tw_nat_monitor.py --bark-key 'YOUR_BARK_KEY' --watch 'Hinet-Nat-1,Seednet-Nat-1' --interval 15 --notify-mode bark+critical
 ```
 
 ## 🔑 获取 Bark 密钥
