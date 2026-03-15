@@ -18,4 +18,4 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
       - name: Syntax check
-        run: python3 -m py_compile monitor.py && echo "Syntax OK"
+        run: python3 -m py_compile fachost_tw_nat_monitor.py && echo "Syntax OK"
