@@ -1,106 +1,79 @@
 # 🛒 FACHOST TW-NAT 库存监控
 
-> 专门监控 [https://fachost.cloud/products/tw-nat](https://fachost.cloud/products/tw-nat) 页面下所有套餐的库存状态，有货立即发送 Bark 提醒到 iPhone。
+> 专门监控 [https://fachost.cloud/products/tw-nat](https://fachost.cloud/products/tw-nat) 页面所有套餐库存状态，有货立即 Bark 推送到 iPhone。
 
-## ⚡ 一键运行
-
-> 替换 `YOUR_BARK_KEY` 为你自己的 Bark 密钥后执行：
+## ⚡ 一键安装并运行
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/ctsunny/stock-monitor/main/fachost_tw_nat_monitor.py -o fachost_tw_nat_monitor.py && python3 -m pip install -U requests && python3 fachost_tw_nat_monitor.py --bark-key 'YOUR_BARK_KEY' --interval 15
+apt install -y screen && curl -fsSL https://raw.githubusercontent.com/ctsunny/stock-monitor/main/fachost_tw_nat_monitor.py -o fachost_tw_nat_monitor.py && python3 -m pip install -U requests --break-system-packages && python3 fachost_tw_nat_monitor.py
 ```
 
-> 如提示 `No module named pip`，先执行：
-> ```bash
-> apt-get install -y python3-pip
-> ```
+> **说明**: Debian/Ubuntu 新系统限制系统级 pip，`--break-system-packages` 对 root 服务器完全安全。
 
-只监控指定套餐（如只盯 Hinet-Nat-1 和 Seednet-Nat-1）：
+## 🎮 菜单操作说明
+
+启动后会显示主菜单：
+
+```
+状态  : 运行中 ●  /  已停止 ○
+最近检测: 2026-03-15 21:33:27  第 3 轮
+  ❌ Hinet-Nat-1: 售罄
+  ❌ Seednet-Nat-1: 售罄
+操作选项:
+  1. 查看实时日志 (attach screen)
+  2. 停止监控
+  3. 修改配置并重启
+  0. 退出
+```
+
+### 套餐多选方式
+
+进入配置选套餐时，自动从页面拉取套餐列表，用以下操作：
+
+```
+[↑↓] 移动光标    [空格] 勾选/取消    [回车] 确定    [0] 监控全部
+
+> [x] Hinet-Nat-1      ← 已勾选
+  [ ] Seednet-Nat-1
+  [x] Hinet-Nat-4      ← 已勾选
+  [ ] Seednet-Nat-2
+```
+
+## 🖥️ SSH 断开后持续运行
+
+监控通过 `screen` 在后台运行，关闭 SSH 不影响。再次 SSH 登录后直接运行脚本即可从菜单查看状态。
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/ctsunny/stock-monitor/main/fachost_tw_nat_monitor.py -o fachost_tw_nat_monitor.py && python3 -m pip install -U requests && python3 fachost_tw_nat_monitor.py --bark-key 'YOUR_BARK_KEY' --watch 'Hinet-Nat-1,Seednet-Nat-1' --interval 15 --notify-mode bark+critical
+# 查看监控运行状态
+ python3 fachost_tw_nat_monitor.py
+
+# 手动 attach 实时日志
+screen -r fachost-monitor
+# Ctrl+A D 挂回后台
 ```
 
 ## 🔑 获取 Bark 密钥
 
 1. iPhone 安装 [Bark App](https://apps.apple.com/app/bark-customed-notifications/id1403753865)
 2. 打开 App，复制首页密钥（形如 `AbCdEfGhIjKl...`）
-3. 粘贴到 `--bark-key` 参数
+3. 粘贴到配置菜单的 Bark 密钥输入框
 
-## 📦 功能特性
-
-- 固定监控 `TW-NAT` 页面所有套餐
-- 自动识别卡片中「立即购买」和「已售罄」状态
-- Bark 推送支持三种方式，抢购建议用 `bark+critical`
-- 避免重复推送：同一套餐有货只推一次，恢复售罄后重置
-- 配置持久化，重启后自动读取
-
-## 🚀 常用命令
-
-**交互式配置**
-```bash
-python3 fachost_tw_nat_monitor.py --setup
-```
-
-**测试 Bark 是否通**
-```bash
-python3 fachost_tw_nat_monitor.py --bark-key 'YOUR_BARK_KEY' --test
-```
-
-**监控全部套餐（20秒/次）**
-```bash
-python3 fachost_tw_nat_monitor.py --bark-key 'YOUR_BARK_KEY'
-```
-
-**紧急提醒模式（穿透静音）**
-```bash
-python3 fachost_tw_nat_monitor.py --bark-key 'YOUR_BARK_KEY' --interval 10 --notify-mode bark+critical
-```
-
-**后台运行（screen）**
-```bash
-screen -S fachost
-python3 fachost_tw_nat_monitor.py --bark-key 'YOUR_BARK_KEY' --interval 15
-# Ctrl+A D 挂后台
-```
-
-**后台运行（nohup）**
-```bash
-nohup python3 fachost_tw_nat_monitor.py --bark-key 'YOUR_BARK_KEY' --interval 15 > fachost.log 2>&1 &
-tail -f fachost.log
-```
+> 如果测试推送失败，在服务器运行以下命令验证：
+> ```bash
+> curl "https://api.day.app/你的KEY/测试/Bark正常"
+> ```
+> 返回 `{"code":200}` 即为 Key 正确。
 
 ## 📋 参数说明
 
 | 参数 | 说明 |
 |---|---|
-| `--bark-key KEY` | Bark 密钥（必填） |
-| `--bark-server URL` | Bark 服务端，默认 `https://api.day.app`（自建时填写） |
-| `--interval N` | 检测间隔秒数，最小 5，默认 20 |
-| `--notify-mode` | `bark` 普通 / `bark+sound` 铃声 / `bark+critical` 穿透静音 |
-| `--watch "名称1,名称2"` | 只监控指定套餐，留空=全部监控 |
-| `--setup` | 交互式配置向导 |
-| `--test` | 发送测试 Bark 消息 |
-
-## 🏷️ 套餐名称参考
-
-页面当前套餐（均可用于 `--watch` 参数）：
-
-```
-Hinet-Nat-1
-Seednet-Nat-1
-Hinet-Nat-4
-Seednet-Nat-2
-```
-
-## 📁 配置文件位置
-
-```bash
-~/.fachost_tw_nat_monitor.json
-```
+| Bark 密钥 | Bark App 首页那串字符 |
+| 检测频率 | 建议 15–30 秒，最小 5 秒 |
+| 提醒方式 | `bark+critical` 可穿透静音，抢购必备 |
+| 套餐选择 | 空格勾选，0 = 监控全部 |
 
 ## ⚠️ 注意事项
 
-- 本脚本专门针对 `fachost.cloud/products/tw-nat` 页面结构定制
-- 如网站前端改版，可能需要更新解析规则
 - 建议检测间隔 ≥ 10 秒，避免触发反爬
+- 如网站前端改版可能需要更新解析规则
