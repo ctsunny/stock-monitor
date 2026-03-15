@@ -120,14 +120,7 @@ def clean_text(s):
 
 
 def parse_cards(html):
-    """
-    解析 FACHOST 页面中的套餐卡片。
-    有货判断逻辑:
-      - 按钮包含「立即购买」/ buy now / bg-green-100 / text-green-600 → 有货
-      - 按钮包含 cursor-not-allowed / pointer-events-none / 已售罄 / bg-red-100 → 售罄
-    """
     cards = []
-
     pattern = re.compile(
         r'<div class="flex flex-col bg-background-secondary border border-neutral rounded-xl p-6 gap-4 relative'
         r'.*?<h2[^>]*>(.*?)</h2>'
@@ -185,40 +178,63 @@ def filter_cards(cards, watch_names):
     return [c for c in cards if c["name"].strip().lower() in wanted]
 
 
-def setup_interactive(cfg):
+def interactive_menu(cfg):
+    """
+    启动时弹出交互菜单，让用户输入 Bark Key 等配置，
+    然后自动进入监控循环，无需再执行任何额外命令。
+    """
     print()
-    print(C.BOLD + "=" * 50 + C.RESET)
-    print(C.BOLD + "  FACHOST TW-NAT 监控 - 交互式配置" + C.RESET)
-    print(C.BOLD + "=" * 50 + C.RESET)
+    print(C.BOLD + "=" * 54 + C.RESET)
+    print(C.BOLD + "   🛒  FACHOST TW-NAT 库存监控" + C.RESET)
+    print(C.BOLD + "   " + URL + C.RESET)
+    print(C.BOLD + "=" * 54 + C.RESET)
     print()
 
-    bark_key = input(f"Bark 密钥 [{cfg.get('bark_key', '')}]: ").strip()
+    # ── Bark 密钥 ──────────────────────────────────────────
+    cur_key = cfg.get("bark_key", "")
+    hint = f"[已保存: {cur_key[:6]}...{cur_key[-4:]}]" if len(cur_key) > 10 else "[未设置]"
+    bark_key = input(f"  Bark 密钥 {hint}（直接回车保留原值）: ").strip()
     if bark_key:
         cfg["bark_key"] = bark_key
 
-    server = input(f"Bark 服务端 [{cfg.get('bark_server', 'https://api.day.app')}]: ").strip()
-    if server:
-        cfg["bark_server"] = server.rstrip("/")
+    # ── 检测频率 ────────────────────────────────────────────
+    interval_input = input(f"  检测频率秒数 [当前: {cfg.get('interval', 20)}]（直接回车保留）: ").strip()
+    if interval_input.isdigit():
+        cfg["interval"] = max(5, int(interval_input))
 
-    interval = input(f"检测频率秒数 [{cfg.get('interval', 20)}]: ").strip()
-    if interval.isdigit():
-        cfg["interval"] = max(5, int(interval))
-
+    # ── 提醒方式 ────────────────────────────────────────────
     print()
-    print("提醒方式：1. bark  2. bark+sound  3. bark+critical（穿透静音，推荐抢购用）")
+    print("  提醒方式:")
+    print("    1. bark          普通推送")
+    print("    2. bark+sound    有铃声")
+    print("    3. bark+critical 穿透静音 ★ 抢购推荐")
     mode_map = {"1": "bark", "2": "bark+sound", "3": "bark+critical"}
-    cur = cfg.get("notify_mode", "bark")
-    choice = input(f"选择 1/2/3 [当前: {cur}]: ").strip()
+    cur_mode = cfg.get("notify_mode", "bark")
+    cur_num  = {v: k for k, v in mode_map.items()}.get(cur_mode, "1")
+    choice = input(f"  选择 1/2/3 [当前: {cur_num}]（直接回车保留）: ").strip()
     if choice in mode_map:
         cfg["notify_mode"] = mode_map[choice]
 
+    # ── 指定套餐 ────────────────────────────────────────────
     print()
-    log_info("TW-NAT 页面当前套餐名示例: Hinet-Nat-1, Seednet-Nat-1, Hinet-Nat-4, Seednet-Nat-2")
-    names = input("指定监控套餐名，多个用逗号分隔，留空=监控全部: ").strip()
-    if names:
-        cfg["watch_names"] = [x.strip() for x in names.split(",") if x.strip()]
+    print("  已知套餐名: Hinet-Nat-1 / Seednet-Nat-1 / Hinet-Nat-4 / Seednet-Nat-2")
+    cur_watch = ", ".join(cfg.get("watch_names", [])) or "全部"
+    names_input = input(f"  指定监控套餐（逗号分隔，留空=全部）[当前: {cur_watch}]: ").strip()
+    if names_input:
+        cfg["watch_names"] = [x.strip() for x in names_input.split(",") if x.strip()]
+    elif names_input == "" and cur_watch == "全部":
+        cfg["watch_names"] = []
 
     save_config(cfg)
+
+    # ── 测试推送确认 ────────────────────────────────────────
+    print()
+    do_test = input("  发送 Bark 测试消息？(y/N): ").strip().lower()
+    if do_test == "y":
+        ok = send_bark(cfg, "FACHOST 监控测试", "Bark 配置正常，监控即将启动。", URL)
+        log(f"测试推送: {'成功 ✅' if ok else '失败 ❌'}")
+
+    print()
     return cfg
 
 
@@ -227,15 +243,13 @@ def monitor(cfg):
     alerted = set()
     round_no = 0
 
-    print()
-    print(C.BOLD + "=" * 60 + C.RESET)
-    print(C.BOLD + f"  🛒 FACHOST TW-NAT 库存监控启动" + C.RESET)
-    print(C.BOLD + f"  URL : {URL}" + C.RESET)
-    print(C.BOLD + f"  频率: {cfg['interval']} 秒/次" + C.RESET)
-    print(C.BOLD + f"  方式: {cfg.get('notify_mode', 'bark')}" + C.RESET)
-    print(C.BOLD + f"  套餐: {', '.join(watch_names) if watch_names else '全部'}" + C.RESET)
-    print(C.BOLD + "  按 Ctrl+C 停止" + C.RESET)
-    print(C.BOLD + "=" * 60 + C.RESET)
+    print(C.BOLD + "=" * 54 + C.RESET)
+    print(C.BOLD + f"  ▶ 监控启动" + C.RESET)
+    print(C.BOLD + f"  频率 : {cfg['interval']} 秒/次" + C.RESET)
+    print(C.BOLD + f"  方式 : {cfg.get('notify_mode', 'bark')}" + C.RESET)
+    print(C.BOLD + f"  套餐 : {', '.join(watch_names) if watch_names else '全部'}" + C.RESET)
+    print(C.BOLD + "  Ctrl+C 停止" + C.RESET)
+    print(C.BOLD + "=" * 54 + C.RESET)
     print()
 
     while True:
@@ -288,26 +302,33 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 示例:
-  python3 fachost_tw_nat_monitor.py --bark-key YOUR_KEY --interval 15
-  python3 fachost_tw_nat_monitor.py --bark-key YOUR_KEY --watch 'Hinet-Nat-1,Seednet-Nat-1' --interval 10
-  python3 fachost_tw_nat_monitor.py --bark-key YOUR_KEY --notify-mode bark+critical
-  python3 fachost_tw_nat_monitor.py --bark-key YOUR_KEY --test
-  python3 fachost_tw_nat_monitor.py --setup
+  python3 fachost_tw_nat_monitor.py                   ← 启动菜单配置后自动监控
+  python3 fachost_tw_nat_monitor.py --bark-key KEY    ← 跳过菜单直接监控
+  python3 fachost_tw_nat_monitor.py --bark-key KEY --watch 'Hinet-Nat-1,Seednet-Nat-1' --interval 10
+  python3 fachost_tw_nat_monitor.py --bark-key KEY --test
         """,
     )
-    parser.add_argument("--setup",        action="store_true", help="交互式配置")
-    parser.add_argument("--bark-key",     type=str,            help="Bark 密钥")
-    parser.add_argument("--bark-server",  type=str,            help="Bark 服务端地址")
-    parser.add_argument("--interval",     type=int,            help="检测频率秒数（最小5）")
+    parser.add_argument("--bark-key",     type=str,  help="Bark 密钥（提供则跳过菜单）")
+    parser.add_argument("--bark-server",  type=str,  help="Bark 服务端地址")
+    parser.add_argument("--interval",     type=int,  help="检测频率秒数（最小5）")
     parser.add_argument("--notify-mode",  type=str,
                         choices=["bark", "bark+sound", "bark+critical"],
                         help="提醒方式")
-    parser.add_argument("--watch",        type=str,            help="指定套餐名，逗号分隔")
-    parser.add_argument("--test",         action="store_true", help="发送 Bark 测试消息")
+    parser.add_argument("--watch",        type=str,  help="指定套餐名，逗号分隔")
+    parser.add_argument("--test",         action="store_true", help="发送 Bark 测试消息后退出")
     args = parser.parse_args()
 
     cfg = load_config()
 
+    # 没有传任何参数 → 进交互菜单
+    no_args = not any([args.bark_key, args.bark_server, args.interval,
+                       args.notify_mode, args.watch, args.test])
+    if no_args:
+        cfg = interactive_menu(cfg)
+        monitor(cfg)
+        return
+
+    # 有参数 → 直接应用参数，跳过菜单
     if args.bark_key:    cfg["bark_key"]    = args.bark_key
     if args.bark_server: cfg["bark_server"] = args.bark_server.rstrip("/")
     if args.interval:    cfg["interval"]    = max(5, args.interval)
@@ -315,10 +336,7 @@ def main():
     if args.watch:
         cfg["watch_names"] = [x.strip() for x in args.watch.split(",") if x.strip()]
 
-    if args.setup:
-        cfg = setup_interactive(cfg)
-    else:
-        save_config(cfg)
+    save_config(cfg)
 
     if args.test:
         ok = send_bark(cfg, "FACHOST 监控测试", "测试消息：Bark 配置正常，监控脚本已就绪。", URL)
