@@ -23,6 +23,7 @@ URL         = "https://fachost.cloud/products/tw-nat"
 CONFIG_FILE = os.path.expanduser("~/.fachost_tw_nat_monitor.json")
 STATUS_FILE = os.path.expanduser("~/.fachost_tw_nat_status.json")
 SCREEN_NAME = "fachost-monitor"
+HOURLY_INTERVAL = 3600   # 小时状态汇报间隔秒
 
 KNOWN_PLANS = ["Hinet-Nat-1", "Seednet-Nat-1", "Hinet-Nat-3", "Hinet-Nat-4", "Seednet-Nat-2"]
 
@@ -59,7 +60,7 @@ def log_err(msg):  log(msg, C.RED)
 def log_info(msg): log(msg, C.CYAN)
 
 
-# ────────────────────────── 配置 ──────────────────────────
+# ────────────────────────── 配置 ─────────────────────────
 
 def load_config():
     cfg = DEFAULT_CONFIG.copy()
@@ -93,7 +94,7 @@ def load_status():
     return {}
 
 
-# ────────────────────────── screen 管理 ──────────────────────────
+# ────────────────────────── screen 管理 ─────────────────────────
 
 def screen_exists():
     try:
@@ -137,10 +138,9 @@ def attach_screen():
     os.system(f"screen -r {SCREEN_NAME}")
 
 
-# ────────────────────────── 空格多选 ──────────────────────────
+# ────────────────────────── 空格多选 ─────────────────────────
 
 def getch():
-    """Read a single character without Enter."""
     fd = sys.stdin.fileno()
     old = termios.tcgetattr(fd)
     try:
@@ -151,19 +151,11 @@ def getch():
 
 
 def multi_select(title, options, selected):
-    """
-    用上下箭头移动光标，空格键勾选/取消，回车确定。
-    selected: set of currently selected option strings
-    返回: 新的 selected set
-    """
-    sel   = set(selected)
-    cur   = 0
+    sel = set(selected)
+    cur = 0
     ENTER = ("\r", "\n")
-    UP    = "A"  # ESC[A
-    DOWN  = "B"  # ESC[B
 
     def render():
-        # 清屏 + 重画
         lines = len(options) + 3
         sys.stdout.write(f"\033[{lines}A\033[J")
         print(f"  {C.BOLD}{title}{C.RESET}")
@@ -175,7 +167,6 @@ def multi_select(title, options, selected):
             print(f"  {arrow}{color}{check} {opt}{C.RESET}")
         sys.stdout.flush()
 
-    # 初始渲染
     print(f"  {C.BOLD}{title}{C.RESET}")
     print(f"  {C.DIM}[↑↓] 移动  [空格] 勾选/取消  [回车] 确定  [0] 监控全部{C.RESET}")
     for i, opt in enumerate(options):
@@ -186,33 +177,34 @@ def multi_select(title, options, selected):
 
     while True:
         ch = getch()
-        if ch == "\x1b":          # ESC sequence
+        if ch == "\x1b":
             ch2 = getch()
             if ch2 == "[":
                 ch3 = getch()
-                if ch3 == "A" and cur > 0:              # up
+                if ch3 == "A" and cur > 0:
                     cur -= 1
-                elif ch3 == "B" and cur < len(options)-1:  # down
+                elif ch3 == "B" and cur < len(options) - 1:
                     cur += 1
-        elif ch == " ":           # space: toggle
+        elif ch == " ":
             opt = options[cur]
-            if opt in sel:
-                sel.remove(opt)
-            else:
-                sel.add(opt)
-        elif ch == "0":           # 0 = 全部
+            if opt in sel: sel.remove(opt)
+            else: sel.add(opt)
+        elif ch == "0":
             sel = set()
         elif ch in ENTER:
             break
-        elif ch in ("q", "Q", "\x03"):  # q or Ctrl+C
+        elif ch in ("q", "Q", "\x03"):
             break
         render()
     return sel
 
 
-# ────────────────────────── Bark ──────────────────────────
+# ────────────────────────── Bark ─────────────────────────
 
-def send_bark(cfg, title, body, jump_url=""):
+def send_bark(cfg, title, body, jump_url="", force_normal=False):
+    """
+    force_normal=True 时强制使用普通推送（不穿透静音），用于状态汇报。
+    """
     if not cfg.get("bark_key"):
         log_warn("未设置 Bark 密钥，跳过推送")
         return False
@@ -220,11 +212,12 @@ def send_bark(cfg, title, body, jump_url=""):
         "title": title, "body": body,
         "group": "fachost-tw-nat", "sound": "minuet",
     }
-    mode = cfg.get("notify_mode", "bark")
-    if mode == "bark+sound":    payload["level"] = "active"
-    elif mode == "bark+critical":
-        payload["level"] = "critical"; payload["volume"] = "10"
-    if jump_url: payload["url"] = jump_url
+    if not force_normal:
+        mode = cfg.get("notify_mode", "bark")
+        if mode == "bark+sound":        payload["level"] = "active"
+        elif mode == "bark+critical":   payload["level"] = "critical"; payload["volume"] = "10"
+    if jump_url:
+        payload["url"] = jump_url
     api = f"{cfg['bark_server'].rstrip('/')}/{cfg['bark_key']}"
     try:
         r = requests.post(api, json=payload, timeout=10)
@@ -291,21 +284,52 @@ def filter_cards(cards, watch_names):
 def run_monitor():
     cfg = load_config()
     watch_names = cfg.get("watch_names", [])
-    alerted = set()
-    round_no = 0
+    alerted     = set()
+    round_no    = 0
+    last_hourly = time.time()   # 上次小时汇报时间
+
+    watch_str = ", ".join(watch_names) if watch_names else "全部"
 
     print(C.BOLD + "=" * 54 + C.RESET, flush=True)
-    print(C.BOLD + f"  ▶ FACHOST TW-NAT 监控已在后台运行" + C.RESET, flush=True)
+    print(C.BOLD + "  ▶ FACHOST TW-NAT 监控已在后台运行" + C.RESET, flush=True)
     print(C.BOLD + f"  频率 : {cfg['interval']} 秒/次" + C.RESET, flush=True)
     print(C.BOLD + f"  方式 : {cfg.get('notify_mode','bark')}" + C.RESET, flush=True)
-    print(C.BOLD + f"  套餐 : {', '.join(watch_names) if watch_names else '全部'}" + C.RESET, flush=True)
+    print(C.BOLD + f"  套餐 : {watch_str}" + C.RESET, flush=True)
     print(C.BOLD + "=" * 54 + C.RESET, flush=True)
+
+    # ── 启动通知 ──
+    send_bark(
+        cfg,
+        title="🟢 FACHOST 监控已启动",
+        body=f"监控套餐: {watch_str}\n频率: {cfg['interval']}秒/次\n方式: {cfg.get('notify_mode','bark')}",
+        force_normal=True,
+    )
+    log_ok("启动通知已发送")
+
+    def send_hourly_report(plans_status):
+        ts  = datetime.now().strftime("%H:%M")
+        if plans_status:
+            lines = []
+            for name, st in plans_status.items():
+                icon = "✅" if st == "有货" else "❌"
+                lines.append(f"{icon} {name}: {st}")
+            body = "\n".join(lines)
+        else:
+            body = "暂无套餐数据"
+        send_bark(
+            cfg,
+            title=f"📊 FACHOST 小时状态汇报 {ts}",
+            body=body,
+            force_normal=True,
+        )
+        log_info(f"小时状态汇报已发送 ({ts})")
 
     while True:
         round_no += 1
         ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         log_info(f"第 {round_no} 轮检测...")
         status = {"last_check": ts, "round": round_no, "plans": {}}
+
         try:
             html  = fetch_html(cfg)
             cards = parse_cards(html)
@@ -331,6 +355,13 @@ def run_monitor():
                         log_warn(f"❌ 售罄: {c['name']}")
                         alerted.discard(c["name"])
         except KeyboardInterrupt:
+            # ── 停止通知 ──
+            send_bark(
+                cfg,
+                title="🔴 FACHOST 监控已停止",
+                body=f"已运行 {round_no} 轮，时间: {datetime.now().strftime('%H:%M:%S')}",
+                force_normal=True,
+            )
             log_info("监控已停止")
             sys.exit(0)
         except Exception as e:
@@ -338,11 +369,24 @@ def run_monitor():
             status["error"] = str(e)
 
         save_status(status)
+
+        # ── 小时汇报 ──
+        now_ts = time.time()
+        if now_ts - last_hourly >= HOURLY_INTERVAL:
+            send_hourly_report(status.get("plans", {}))
+            last_hourly = now_ts
+
         log_info(f"{cfg['interval']} 秒后下一轮...")
         print(flush=True)
         try:
             time.sleep(max(5, int(cfg["interval"])))
         except KeyboardInterrupt:
+            send_bark(
+                cfg,
+                title="🔴 FACHOST 监控已停止",
+                body=f"已运行 {round_no} 轮，时间: {datetime.now().strftime('%H:%M:%S')}",
+                force_normal=True,
+            )
             log_info("监控已停止")
             sys.exit(0)
 
@@ -361,7 +405,6 @@ def main_menu():
         print(C.BOLD + "   🛒  FACHOST TW-NAT 库存监控" + C.RESET)
         print(C.BOLD + "=" * 54 + C.RESET)
 
-        # 运行状态
         state_str = f"{C.GREEN}运行中 ●{C.RESET}" if running else f"{C.RED}已停止 ○{C.RESET}"
         print(f"  状态  : {state_str}")
         if status:
@@ -372,7 +415,6 @@ def main_menu():
             if "error" in status:
                 print(f"  {C.RED}最近异常: {status['error']}{C.RESET}")
 
-        # 配置摘要
         key = cfg.get('bark_key', '')
         key_str = f"{key[:6]}...{key[-4:]}" if len(key) > 10 else ("已设置" if key else "未设置")
         watch = ', '.join(cfg.get('watch_names', [])) or '全部'
@@ -380,7 +422,6 @@ def main_menu():
         print(C.DIM + f"  频率   : {cfg.get('interval',20)}秒  方式: {cfg.get('notify_mode','bark')}  套餐: {watch}" + C.RESET)
         print(C.BOLD + "=" * 54 + C.RESET)
 
-        # 操作选项
         if running:
             print("  1. 查看实时日志 (attach screen)")
             print("  2. 停止监控")
@@ -400,6 +441,14 @@ def main_menu():
                 attach_screen()
             elif choice == "2":
                 stop_screen()
+                # 由于 screen 被 kill，无法触发 KeyboardInterrupt，这里由菜单失送停止通知
+                last_st = load_status()
+                send_bark(
+                    cfg,
+                    title="🔴 FACHOST 监控已停止",
+                    body=f"已运行 {last_st.get('round','?')} 轮，时间: {datetime.now().strftime('%H:%M:%S')}",
+                    force_normal=True,
+                )
                 log_ok("监控已停止")
             elif choice == "3":
                 stop_screen()
@@ -425,22 +474,18 @@ def main_menu():
 
 
 def config_wizard(cfg):
-    """Bark Key + 频率 + 提醒方式 + 空格多选套餐"""
     print()
     print(C.BOLD + "  —— 配置向导 ——" + C.RESET)
     print()
 
-    # Bark Key
     cur_key = cfg.get("bark_key", "")
     hint = f"[{cur_key[:6]}...{cur_key[-4:]}]" if len(cur_key) > 10 else "[未设置]"
     v = input(f"  Bark 密钥 {hint} (回车保留): ").strip()
     if v: cfg["bark_key"] = v
 
-    # 频率
     v = input(f"  检测频率秒 [{cfg.get('interval',20)}] (回车保留): ").strip()
     if v.isdigit(): cfg["interval"] = max(5, int(v))
 
-    # 提醒方式
     print()
     mode_map = {"1": "bark", "2": "bark+sound", "3": "bark+critical"}
     cur_num  = {v2: k for k, v2 in mode_map.items()}.get(cfg.get("notify_mode","bark"), "1")
@@ -451,13 +496,10 @@ def config_wizard(cfg):
     v = input(f"  选择 1/2/3 [当前:{cur_num}] (回车保留): ").strip()
     if v in mode_map: cfg["notify_mode"] = mode_map[v]
 
-    # 空格多选套餐
     print()
     current_sel = set(cfg.get("watch_names", []))
-    # 先尝试从页面动态获取套餐名
     try:
-        tmp_cfg = {**cfg, "timeout": 10}
-        html  = fetch_html(tmp_cfg)
+        html  = fetch_html({**cfg, "timeout": 10})
         cards = parse_cards(html)
         options = [c["name"] for c in cards] if cards else KNOWN_PLANS
     except Exception:
@@ -465,13 +507,12 @@ def config_wizard(cfg):
 
     print()
     new_sel = multi_select("选择监控套餐 (空格勾选, 0=全部)", options, current_sel)
-    cfg["watch_names"] = list(new_sel)  # 空 = 全部
+    cfg["watch_names"] = list(new_sel)
     print()
 
-    # 测试推送
     do_test = input("  发送 Bark 测试消息? (y/N): ").strip().lower()
     if do_test == "y":
-        ok = send_bark(cfg, "FACHOST 测试", "Bark 正常，监控即将启动。", URL)
+        ok = send_bark(cfg, "FACHOST 测试", "Bark 正常，监控即将启动。", URL, force_normal=True)
         log(f"测试: {'成功✅' if ok else '失败❌ 请检查 Bark Key 是否正确'}")
 
     save_config(cfg)
@@ -482,9 +523,8 @@ def config_wizard(cfg):
 
 if __name__ == "__main__":
     if len(sys.argv) == 2 and sys.argv[1] == "--run-monitor":
-        # 被 screen 内部调用的后台运行模式
         run_monitor()
     else:
         if not screen_available():
-            print(f"{C.YELLOW}[提示] 建议安装 screen 以支持后台运行: apt install screen{C.RESET}")
+            print(f"{C.YELLOW}[提示] 建议安装 screen: apt install screen{C.RESET}")
         main_menu()
